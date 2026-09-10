@@ -63,16 +63,31 @@ export function buildTelegramMessage(payload) {
   return null
 }
 
+// Strips the bot token out of any string before it's ever logged — the
+// request URL below embeds it (Telegram's API shape requires that), and a
+// network-level fetch failure can otherwise echo the full URL back inside
+// its error message. This keeps the token out of Vercel/Netlify logs even
+// in that case.
+function redact(str, token) {
+  if (!token || typeof str !== 'string') return str
+  return str.split(token).join('[redacted]')
+}
+
 export async function sendTelegramMessage(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, disable_notification: false }),
-  })
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`Telegram API responded ${res.status}: ${body}`)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, disable_notification: false }),
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`Telegram API responded ${res.status}: ${redact(body, token)}`)
+    }
+  } catch (err) {
+    const safeMessage = redact(err instanceof Error ? err.message : String(err), token)
+    throw new Error(safeMessage)
   }
 }
 

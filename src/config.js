@@ -12,7 +12,7 @@
 // false -> the countdown uses REAL_BIRTHDAY_TARGET (11 Sept 2026, 12:00 AM IST)
 //
 // IMPORTANT: set this to `false` before you actually send the site to Archuu.
-export const PREVIEW_MODE = true
+export const PREVIEW_MODE = false
 
 // ---------------------------------------------------------------------------
 // 2. THE REAL BIRTHDAY
