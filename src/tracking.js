@@ -20,14 +20,10 @@ const VISIT_KEY = 'archuu_visited'
 // counting time as "actively viewing" (per-second timer just pauses).
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000
 
-// How long the tab can sit hidden/backgrounded before we treat the visit as
-// over and send the "session ended" notification. A quick app-switch or
-// notification-check on mobile shouldn't count as leaving.
-const HIDDEN_GRACE_MS = 10 * 1000
-
-// Refreshing the page tears down this session (fires `pagehide`) and starts
-// a fresh one — without this floor, every accidental refresh would fire its
-// own near-zero-length "session ended" notification.
+// A session under this many active seconds doesn't get its own "session
+// ended" notification — this is what keeps an accidental refresh (which
+// tears down and instantly recreates the page) from spamming a near-zero
+// length close message.
 const MIN_ACTIVE_SECONDS_TO_REPORT = 5
 
 const TICK_MS = 1000
@@ -77,6 +73,12 @@ function postOpenEvent(data) {
   }
 }
 
+// Used for the final "session ended" event. sendBeacon is what actually
+// makes this reliable: it's specifically designed to survive the page
+// tearing down (tab closing, app being swiped away, navigation), which a
+// normal fetch() is not guaranteed to do — the browser queues it and
+// delivers it even after the page is gone. Falls back to a keepalive fetch
+// only if sendBeacon itself isn't available.
 function sendFinalEvent(data) {
   const json = JSON.stringify(data)
   try {
@@ -106,32 +108,52 @@ export function initTracking() {
   let isVisible = document.visibilityState === 'visible'
   let lastActivityAt = Date.now()
   let activeMs = 0
-  let reported = false
-  let hiddenGraceTimer = null
+  let tickInterval = null
+  // Starts "already reported" so a stray hidden/pagehide event that somehow
+  // fires before beginSession() runs below can't send an empty session.
+  let reported = true
 
   const withinActivityWindow = () => Date.now() - lastActivityAt < INACTIVITY_TIMEOUT_MS
   const markActivity = () => {
     lastActivityAt = Date.now()
   }
 
+  // Activity listeners stay attached for the page's whole lifetime — they
+  // just feed lastActivityAt, independent of whichever session is current.
   ACTIVITY_EVENTS.forEach((evt) => window.addEventListener(evt, markActivity, { passive: true }))
 
-  const tick = setInterval(() => {
-    if (isVisible && withinActivityWindow()) {
-      activeMs += TICK_MS
-    }
-  }, TICK_MS)
-
-  const stopTracking = () => {
-    clearInterval(tick)
-    if (hiddenGraceTimer) clearTimeout(hiddenGraceTimer)
-    ACTIVITY_EVENTS.forEach((evt) => window.removeEventListener(evt, markActivity))
+  // Starts (or restarts) the per-second active-time accumulator for a fresh
+  // viewing session.
+  function beginSession() {
+    activeMs = 0
+    lastActivityAt = Date.now()
+    reported = false
+    if (tickInterval) clearInterval(tickInterval)
+    tickInterval = setInterval(() => {
+      if (isVisible && withinActivityWindow()) {
+        activeMs += TICK_MS
+      }
+    }, TICK_MS)
   }
 
-  const reportSessionEnd = () => {
+  // Ends the current session RIGHT NOW and — if it was long enough to be
+  // worth mentioning — sends the "session ended" Telegram notification via
+  // sendBeacon. Called immediately (no artificial delay) from every browser
+  // lifecycle signal that can mean "she's gone": the tab/app was actually
+  // closed, or it just went to the background. iOS Safari in particular
+  // gives no guarantee that any further event fires after backgrounding —
+  // the page can be frozen or discarded outright — so this can't afford to
+  // wait and see.
+  //
+  // Guarded by `reported` so pagehide/visibilitychange/beforeunload racing
+  // each other (which they routinely do) only ever sends one notification.
+  function endSession() {
     if (reported) return
     reported = true
-    stopTracking()
+    if (tickInterval) {
+      clearInterval(tickInterval)
+      tickInterval = null
+    }
 
     const activeSeconds = Math.round(activeMs / 1000)
     if (activeSeconds < MIN_ACTIVE_SECONDS_TO_REPORT) return
@@ -146,24 +168,28 @@ export function initTracking() {
   document.addEventListener('visibilitychange', () => {
     isVisible = document.visibilityState === 'visible'
     if (isVisible) {
-      if (hiddenGraceTimer) {
-        clearTimeout(hiddenGraceTimer)
-        hiddenGraceTimer = null
-      }
       markActivity()
-    } else if (!hiddenGraceTimer) {
-      hiddenGraceTimer = setTimeout(() => {
-        hiddenGraceTimer = null
-        reportSessionEnd()
-      }, HIDDEN_GRACE_MS)
+      // She's back after a session had already been closed out (e.g. she'd
+      // locked the screen, or switched away for a while) — start tracking
+      // a brand new session rather than silently reviving the old one.
+      if (reported) beginSession()
+    } else {
+      // Tab/app just went to the background. On iPhone Safari this covers
+      // locking the screen, switching apps, and swiping Safari away — end
+      // the session immediately rather than guessing whether she'll return.
+      endSession()
     }
   })
 
-  // Belt-and-suspenders for an actual tab close / navigation away — these
-  // can race with the grace timer above; reportSessionEnd() only ever
-  // sends once.
-  window.addEventListener('pagehide', reportSessionEnd)
-  window.addEventListener('beforeunload', reportSessionEnd)
+  // Belt-and-suspenders for an actual tab close / navigation away.
+  // `pagehide` is the most reliable "really leaving" signal across
+  // browsers, including iOS Safari (more reliable there than `unload`,
+  // which mobile Safari often skips entirely). These race with the
+  // visibilitychange handler above; endSession() only ever sends once.
+  window.addEventListener('pagehide', endSession)
+  window.addEventListener('beforeunload', endSession)
+
+  beginSession()
 
   // --- "new visit" notification — sent at most once per browser/device ---
   let isNewVisit = false
