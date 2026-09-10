@@ -12,6 +12,7 @@
 // ============================================================================
 
 import { PREVIEW_MODE } from './config'
+import { getIphoneModelLabel } from './deviceModel'
 
 const ENDPOINT = '/api/visit'
 const VISIT_KEY = 'archuu_visited'
@@ -202,11 +203,16 @@ export function initTracking() {
   }
 
   if (isNewVisit) {
+    const ua = navigator.userAgent || ''
     postOpenEvent({
       type: 'open',
       openTimeIso: new Date().toISOString(),
       device: detectDevice(),
       browser: detectBrowser(),
+      // Only ever a specific model name or the honest "unavailable" label —
+      // see src/deviceModel.js for why Safari can't reliably give us more.
+      // Omitted entirely (undefined) for non-iPhone devices.
+      deviceModel: getIphoneModelLabel(ua) || undefined,
     })
   }
 }

@@ -41,11 +41,17 @@ export function buildTelegramMessage(payload) {
     const openedAt = formatIstTime(payload.openTimeIso)
     const device = clampString(payload.device, 20) || 'Unknown'
     const browser = clampString(payload.browser, 30) || 'Unknown'
+    // Only ever a specific model (e.g. "iPhone 15 Pro") or the honest
+    // "iPhone (model unavailable)" label sent by the client — never
+    // fabricated here. Omitted on the device line entirely for non-iPhone
+    // visitors (Android, desktop, etc.), where it's simply not present.
+    const deviceModel = clampString(payload.deviceModel, 40)
+    const deviceLine = deviceModel ? `📱 Device: ${device} — ${deviceModel}` : `📱 Device: ${device}`
     return [
       '🎂 ARCHUU BIRTHDAY WEBSITE',
       'NEW VISIT',
       `🕐 Opened: ${openedAt}`,
-      `📱 Device: ${device}`,
+      deviceLine,
       `🌐 Browser: ${browser}`,
     ].join('\n')
   }
